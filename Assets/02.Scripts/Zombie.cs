@@ -1,6 +1,6 @@
 ﻿using System.Collections;
 using UnityEngine;
-using UnityEngine.AI; // AI, 내비게이션 시스템 관련 코드 가져오기
+using UnityEngine.AI;
 
 // 좀비 AI 구현
 public class Zombie : LivingEntity
@@ -23,7 +23,8 @@ public class Zombie : LivingEntity
     private float lastAttackTime; // 마지막 공격 시점
 
     // 추적할 대상이 존재하는지 알려주는 프로퍼티
-    private bool hasTarget {
+    private bool hasTarget
+    {
         get
         {
             // 추적할 대상이 존재하고, 대상이 사망하지 않았다면 true
@@ -37,48 +38,128 @@ public class Zombie : LivingEntity
         }
     }
 
-    private void Awake() {
+    private void Awake()
+    {
         // 초기화
+        navMeshAgent = GetComponent<NavMeshAgent>();
+        zombieAnimator = GetComponent<Animator>();
+        zombieAudioPlayer = GetComponent<AudioSource>();
+        zombieRenderer = GetComponentInChildren<Renderer>();
     }
 
     // 좀비 AI의 초기 스펙을 결정하는 셋업 메서드
-    public void Setup(ZombieData zombieData) {
-        
+    public void Setup(ZombieData zombieData)
+    {
+        //좀비 데이터를 기반으로 좀비의 능력치 설정
+        startingHealth = zombieData.health;
+        health = zombieData.health;
+        damage = zombieData.damage;
+        navMeshAgent.speed = zombieData.speed;
+        zombieRenderer.material.color = zombieData.skinColor;
     }
 
-    private void Start() {
+    private void Start()
+    {
         // 게임 오브젝트 활성화와 동시에 AI의 추적 루틴 시작
         StartCoroutine(UpdatePath());
     }
 
-    private void Update() {
+    private void Update()
+    {
         // 추적 대상의 존재 여부에 따라 다른 애니메이션 재생
         zombieAnimator.SetBool("HasTarget", hasTarget);
     }
 
     // 주기적으로 추적할 대상의 위치를 찾아 경로 갱신
-    private IEnumerator UpdatePath() {
+    private IEnumerator UpdatePath()
+    {
         // 살아 있는 동안 무한 루프
         while (!dead)
         {
+            if (hasTarget)
+            {
+                //추적 대상이 존재하는 경우 : 내비게이션 활성화
+                navMeshAgent.isStopped = false;
+                navMeshAgent.SetDestination(targetEntity.transform.position);
+            }
+            else
+            {
+                //추적 대상이 존재하지 않는 경우 : 내베게이션 비활성화 및 추적 대상 탐색
+                navMeshAgent.isStopped = true;
+
+                //20유닛의 반지름을 가진 가상의 구를 그린 후, 
+                //겹치는 콜라이더 중 whatIsTarget 레이어를 가진 콜라이더만 가져옴
+                Collider[] colliders =
+                    Physics.OverlapSphere(transform.position, 20f, whatIsTarget);
+
+                for (int i = 0; i < colliders.Length; i++)
+                {
+                    LivingEntity livingEntity = colliders[i].GetComponent<LivingEntity>();
+
+                    if (livingEntity != null && !livingEntity.dead)
+                    {
+                        targetEntity = livingEntity;
+                        break;
+                    }
+                }
+            }
             // 0.25초 주기로 처리 반복
             yield return new WaitForSeconds(0.25f);
         }
     }
 
     // 데미지를 입었을 때 실행할 처리
-    public override void OnDamage(float damage, Vector3 hitPoint, Vector3 hitNormal) {
+    public override void OnDamage(float damage, Vector3 hitPoint, Vector3 hitNormal)
+    {
+        if (!dead)
+        {
+            //공격받은 지점과 방향으로 파티클 효과 재생
+            hitEffect.transform.position = hitPoint;
+            hitEffect.transform.rotation = Quaternion.LookRotation(hitNormal);
+            hitEffect.Play();
+            //피격 효과음 재생
+            zombieAudioPlayer.PlayOneShot(hitSound);
+        }
         // LivingEntity의 OnDamage()를 실행하여 데미지 적용
         base.OnDamage(damage, hitPoint, hitNormal);
     }
 
     // 사망 처리
-    public override void Die() {
+    public override void Die()
+    {
         // LivingEntity의 Die()를 실행하여 기본 사망 처리 실행
         base.Die();
+
+        //다른 AI를 방해하지 않도록 자신의 모든 콜라이더 비활성화
+        Collider[] zombieColliders = GetComponents<Collider>();
+        for (int i = 0; i < zombieColliders.Length; i++)
+        {
+            zombieColliders[i].enabled = false;
+        }
+
+        navMeshAgent.isStopped = true;
+        navMeshAgent.enabled = false;
+
+        zombieAnimator.SetTrigger("Die");
+        zombieAudioPlayer.PlayOneShot(deathSound);
     }
 
-    private void OnTriggerStay(Collider other) {
-        // 트리거 충돌한 상대방 게임 오브젝트가 추적 대상이라면 공격 실행
+    private void OnTriggerStay(Collider other)
+    {
+        //자신이 사망하지 않았으며, 공격 주기가 돌았을 경우
+        if (!dead && Time.time >= lastAttackTime + timeBetAttack)
+        {
+            LivingEntity attackTarget = other.GetComponent<LivingEntity>();
+            // 트리거 충돌한 상대방 게임 오브젝트가 추적 대상이라면 공격 실행
+            if (attackTarget != null && attackTarget == targetEntity)
+            {
+                //상대방의 피격 위치와 피격 방향을 근갓값으로 계산
+                lastAttackTime = Time.time;
+                Vector3 hitPoint = other.ClosestPoint(transform.position);
+                Vector3 hitNormal = transform.position - other.transform.position;
+                //공격 실행
+                attackTarget.OnDamage(damage, hitPoint, hitNormal);
+            }
+        }
     }
 }
